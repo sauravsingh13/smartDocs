@@ -1,0 +1,24 @@
+{
+  "name": "smartdocs-rag",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "langchain": "^0.2.20",
+    "next": "14.2.5",
+    "openai": "^4.58.1",
+    "pdf-parse": "^1.1.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "typescript": "5.9.3"
+  }
+}
