@@ -2,6 +2,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import formidable from 'formidable';
 import path from 'node:path';
+import os from 'node:os';
 import fs from 'node:fs/promises';
 
 export const config = { api: { bodyParser: false } };
@@ -9,12 +10,13 @@ export const config = { api: { bodyParser: false } };
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25MB/file
 
 async function parseForm(req: NextApiRequest) {
-  const uploadDir = path.join(process.cwd(), 'tmp_uploads');
-  await fs.mkdir(uploadDir, { recursive: true });
+  // Use OS temp dir (writable on Vercel / serverless). Create a subfolder to avoid collisions.
+  const safeTmp = path.join(os.tmpdir(), 'smartdocs_tmp_uploads');
+  await fs.mkdir(safeTmp, { recursive: true });
 
   const form = formidable({
     multiples: true,
-    uploadDir,
+    uploadDir: safeTmp,
     keepExtensions: true,
     maxFileSize: MAX_FILE_BYTES,
   });
@@ -38,62 +40,48 @@ function resolvePdfParse(pdfModule: any): ((buf: Buffer) => Promise<any>) | null
   return null;
 }
 
-/**
- * Attempt to import a working pdfjs-dist entry that exposes getDocument.
- * Returns { lib, chosenPath } or throws.
- */
-async function loadPdfJsLib(): Promise<{ lib: any; chosenPath: string }> {
+/* Try several pdfjs import paths to support multiple versions/builds */
+async function loadPdfJsLib(): Promise<{ lib: any; chosenPath: string } | null> {
   const candidates = [
     'pdfjs-dist/legacy/build/pdf',
     'pdfjs-dist/legacy/build/pdf.js',
     'pdfjs-dist/es5/build/pdf',
     'pdfjs-dist/build/pdf',
+    'pdfjs-dist',
   ];
 
   for (const p of candidates) {
     try {
-      // @ts-ignore dynamic import - runtime-only
+      // @ts-ignore runtime-only import
       const mod = await import(p);
-      if (!mod) {
-        console.warn(`pdfjs import ${p} returned falsy module`);
-        continue;
-      }
-      const keys = Object.keys(mod);
+      if (!mod) continue;
       const gd = mod.getDocument ?? (mod.default && mod.default.getDocument) ?? undefined;
-      console.info(`Tried pdfjs path "${p}" — module keys:`, keys.slice(0, 40));
       if (typeof gd === 'function') {
-        // normalize lib to an object that has getDocument reference
         const lib = mod.getDocument ? mod : (mod.default ? mod.default : mod);
         return { lib, chosenPath: p };
-      } else {
-        console.warn(`pdfjs path "${p}" does not expose getDocument (typeof: ${typeof gd})`);
       }
-    } catch (e: any) {
-      console.warn(`Import candidate "${p}" threw:`, (e && e.message) || e);
+    } catch (e) {
+      // continue trying other candidates
+      console.info(`pdfjs candidate "${p}" import failed:`, (e as any)?.message || e);
     }
   }
-
-  throw new Error('Could not load a pdfjs-dist entry that exposes getDocument; check pdfjs-dist installation/version.');
+  return null;
 }
 
-/**
- * Extract text via pdfjs-dist (tries multiple entrypoints internally using loadPdfJsLib()).
- */
 async function extractTextWithPdfJs(buf: Buffer): Promise<string> {
-  const { lib: pdfjsLib, chosenPath } = await loadPdfJsLib();
+  const found = await loadPdfJsLib();
+  if (!found) throw new Error('Could not load a pdfjs-dist entry that exposes getDocument; check pdfjs-dist installation/version.');
+
+  const { lib: pdfjsLib, chosenPath } = found;
   console.info('Using pdfjs lib from', chosenPath);
 
-  // Ensure we pass a plain Uint8Array
   const uint8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-
-  // Use getDocument
   const loadingTask = pdfjsLib.getDocument({ data: uint8 });
   const doc = await loadingTask.promise;
   const numPages = doc.numPages || 0;
   console.info(`pdfjs doc loaded: pages=${numPages}`);
 
   const pieces: string[] = [];
-
   for (let p = 1; p <= numPages; p++) {
     try {
       const page = await doc.getPage(p);
@@ -103,12 +91,11 @@ async function extractTextWithPdfJs(buf: Buffer): Promise<string> {
       if (typeof (page as any).cleanup === 'function') {
         try { (page as any).cleanup(); } catch (_e) {}
       }
-    } catch (pageErr: any) {
-      console.warn(`Failed to extract text for page ${p}:`, pageErr?.message || pageErr);
+    } catch (pageErr) {
+      console.warn(`Failed to extract text for page ${p}:`, (pageErr as any)?.message || pageErr);
     }
   }
 
-  // try to destroy/cleanup doc
   if (typeof (doc as any).destroy === 'function') {
     try { (doc as any).destroy(); } catch (_e) {}
   } else if (typeof (doc as any).cleanup === 'function') {
@@ -134,7 +121,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const allChunks: Array<{ text: string; source: string; page: number }> = [];
 
-    // Try pdf-parse first
+    // Try pdf-parse first (fast path)
     let pdfParseFn: ((buf: Buffer) => Promise<any>) | null = null;
     let pdfModuleShape: string[] = [];
     console.info('Attempting to load pdf-parse for PDF text extraction...');
@@ -208,12 +195,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       } catch (fileErr: any) {
         console.error(`Error processing file ${filename}:`, fileErr?.message || fileErr);
       } finally {
-        await fs.unlink(fp).catch(() => {});
+        // Attempt to remove temp file. It's okay if this fails.
+        await fs.unlink(fp).catch((err) => {
+          console.warn('Failed to remove temp upload file:', fp, (err as any)?.message || err);
+        });
       }
     }
 
     if (!allChunks.length) return res.status(400).json({ error: 'No readable text extracted' });
-    console.log(allChunks);
 
     const embeddings = await embedTextsFromChunks(allChunks);
 
@@ -221,7 +210,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!store || !Array.isArray(store.chunks) || !Array.isArray(store.embeddings)) {
       throw new Error('Store shape invalid: expected { chunks: [], embeddings: [] }');
     }
-    console.log(allChunks, embeddings);
+
     store.chunks.push(...allChunks);
     store.embeddings.push(...embeddings);
     await saveStore(store);
@@ -229,7 +218,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.json({ ok: true, added: allChunks.length });
   } catch (e: any) {
     console.error('Ingest error:', e);
-    // return the message but avoid leaking huge internals
     res.status(500).json({ error: e?.message ? String(e.message).slice(0, 200) : 'Ingest failed' });
   }
 }
