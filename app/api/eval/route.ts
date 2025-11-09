@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { embedQuery, topK } from '../../../lib/rag';
-import { loadStore } from '../../../lib/store';
+import { getAll } from '../../../lib/store';
 
 type QA = { q: string; mustInclude: string[] };
 
@@ -20,7 +20,7 @@ const SAMPLE_QA: QA[] = [
 export const runtime = 'nodejs';
 
 export async function GET() {
-  const store = await loadStore();
+  const store = await getAll();
   if (store.chunks.length === 0) {
     return NextResponse.json({ error: 'No documents ingested.' }, { status: 400 });
   }

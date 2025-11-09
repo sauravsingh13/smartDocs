@@ -1,7 +1,7 @@
-import { NextResponse } from 'next/server';
-import { loadStore } from '../../../lib/store';
+import { NextResponse } from "next/server";
+import { countChunks } from "../../../lib/store";
 
 export async function GET() {
-  const store = await loadStore();
-  return NextResponse.json({ chunks: store.chunks.length });
+  const n = await countChunks();
+  return NextResponse.json({ chunks: n });
 }

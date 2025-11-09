@@ -1,36 +1,30 @@
-import { promises as fs } from 'fs';
-import path from 'path';
+// lib/store.ts
+import { getModels, ChunkDoc } from "./models";
 
 export type Chunk = { text: string; source: string; page: number };
 
-type Store = { chunks: Chunk[]; embeddings: number[][] };
-
-const DATA_DIR = path.join(process.cwd(), 'data');
-const STORE_PATH = path.join(DATA_DIR, 'store.json');
-
-export async function loadStore(): Promise<Store> {
-  try {
-    const raw = await fs.readFile(STORE_PATH, 'utf8');
-    const parsed = JSON.parse(raw) as any;
-
-    // Migrate from older format if needed
-    if (Array.isArray(parsed?.texts)) {
-      const chunks = (parsed.texts as string[]).map((t, i) => ({
-        text: t, source: 'unknown.pdf', page: 1 + (i % 1),
-      }));
-      return { chunks, embeddings: parsed.embeddings || [] };
-    }
-
-    return parsed as Store;
-  } catch {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    const empty: Store = { chunks: [], embeddings: [] };
-    await fs.writeFile(STORE_PATH, JSON.stringify(empty), 'utf8');
-    return empty;
+export async function appendChunksEmbeddings(chunks: Chunk[], embeddings: number[][]) {
+  const { Chunk, Embedding } = await getModels();
+  if (chunks.length !== embeddings.length) {
+    throw new Error("chunks.length must equal embeddings.length");
   }
+  const now = Date.now();
+  const chunkDocs = chunks.map((c, i) => ({ ...c, idx: now + i }));
+  const embDocs = embeddings.map((v, i) => ({ vec: v, idx: now + i }));
+
+  // Insert in order; no TX needed for demo
+  await Chunk.insertMany(chunkDocs, { ordered: true });
+  await Embedding.insertMany(embDocs, { ordered: true });
 }
 
-export async function saveStore(store: Store) {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.writeFile(STORE_PATH, JSON.stringify(store), 'utf8');
+export async function getAll(): Promise<{ chunks: ChunkDoc[]; embeddings: number[][] }> {
+  const { Chunk, Embedding } = await getModels();
+  const chunks = await Chunk.find({}, { _id: 0 }).sort({ idx: 1 }).lean();
+  const embs = await Embedding.find({}, { _id: 0, vec: 1 }).sort({ idx: 1 }).lean();
+  return { chunks, embeddings: embs.map((e: any) => e.vec) };
+}
+
+export async function countChunks(): Promise<number> {
+  const { Chunk } = await getModels();
+  return Chunk.estimatedDocumentCount();
 }
