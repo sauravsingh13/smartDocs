@@ -10,7 +10,6 @@ async function getEmbedder() {
       model: process.env.JINA_EMBED_MODEL || "jina-embeddings-v3",
     });
   }
-  console.log(process.env.JINA_API_KEY, process.env.JINA_EMBED_MODEL);
   return embedder;
 }
 

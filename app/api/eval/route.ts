@@ -4,6 +4,12 @@ import { loadStore } from '../../../lib/store';
 
 type QA = { q: string; mustInclude: string[] };
 
+type EvalResult = {
+  question: string;
+  retrieved: { source: string; page: number }[];
+  passed: boolean;
+};
+
 // Add or modify to your docs
 const SAMPLE_QA: QA[] = [
   { q: "What is the document about?", mustInclude: ["about", "purpose", "summary"] },
@@ -19,7 +25,7 @@ export async function GET() {
     return NextResponse.json({ error: 'No documents ingested.' }, { status: 400 });
   }
 
-  const results = [];
+  const results: EvalResult[] = [];
   let hits = 0;
 
   for (const qa of SAMPLE_QA) {
